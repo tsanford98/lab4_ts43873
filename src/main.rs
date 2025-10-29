@@ -84,12 +84,16 @@ fn run(opts: & tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
 
     // TODO
     let mut coordinator = coordinator::Coordinator::new(coord_log_path, &running);
+    let (server, server_name) = IpcOneShotServer::<(Sender<ProtocolMessage>, Receiver<ProtocolMessage>)>::new().unwrap();
+    // set opts.ipc_path to server_name
+    let mut run_opts = opts.clone();
+    run_opts.ipc_path = server_name;
     let mut children = Vec::new();
     for i in 0..opts.num_clients {
         let mut child_opts = tpcoptions::TPCOptions {
             mode: "client".to_string(),
             num: i,
-            ipc_path: opts.ipc_path.clone(),
+            ipc_path: run_opts.ipc_path.clone(),
             ..opts.clone()
         };
         let (child, tx, rx) = spawn_child_and_connect(&mut child_opts);
@@ -101,7 +105,7 @@ fn run(opts: & tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
         let mut child_opts = tpcoptions::TPCOptions {
             mode: "participant".to_string(),
             num: i,
-            ipc_path: opts.ipc_path.clone(),
+            ipc_path: run_opts.ipc_path.clone(),
             ..opts.clone()
         };
         let (child, tx, rx) = spawn_child_and_connect(&mut child_opts);
