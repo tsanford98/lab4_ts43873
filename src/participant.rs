@@ -48,6 +48,8 @@ pub struct Participant {
     running: Arc<AtomicBool>,
     send_success_prob: f64,
     operation_success_prob: f64,
+    tx: Sender<ProtocolMessage>,
+    rx: Receiver<ProtocolMessage>,
 }
 
 ///
@@ -77,7 +79,10 @@ impl Participant {
         log_path: String,
         r: Arc<AtomicBool>,
         send_success_prob: f64,
-        operation_success_prob: f64) -> Participant {
+        operation_success_prob: f64,
+        tx: Sender<ProtocolMessage>,
+        rx: Receiver<ProtocolMessage>,
+    ) -> Participant {
 
         Participant {
             id_str: id_str,
@@ -87,6 +92,8 @@ impl Participant {
             send_success_prob: send_success_prob,
             operation_success_prob: operation_success_prob,
             // TODO
+            tx,
+            rx,
         }
     }
 

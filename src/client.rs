@@ -17,7 +17,7 @@ use client::ipc_channel::ipc::TryRecvError;
 use client::ipc_channel::ipc::IpcSender as Sender;
 
 use message;
-use message::MessageType;
+use message::{MessageType, ProtocolMessage};
 use message::RequestStatus;
 
 // Client state and primitives for communicating with the coordinator
@@ -26,6 +26,8 @@ pub struct Client {
     pub id_str: String,
     pub running: Arc<AtomicBool>,
     pub num_requests: u32,
+    pub tx: Sender<ProtocolMessage>,
+    pub rx: Receiver<ProtocolMessage>,
 }
 
 ///
@@ -49,13 +51,19 @@ impl Client {
     /// HINT: You may want to pass some global flags that indicate whether
     ///       the protocol is still running to this constructor
     ///
-    pub fn new(id_str: String,
-               running: Arc<AtomicBool>) -> Client {
+    pub fn new(
+        id_str: String,
+        running: Arc<AtomicBool>,
+        tx: Sender<ProtocolMessage>,
+        rx: Receiver<ProtocolMessage>,
+    ) -> Client {
         Client {
             id_str: id_str,
             running: running,
             num_requests: 0,
             // TODO
+            tx,
+            rx,
         }
     }
 
