@@ -7,12 +7,12 @@ extern crate stderrlog;
 extern crate rand;
 extern crate ipc_channel;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use coordinator::ipc_channel::ipc::IpcSender as Sender;
 use coordinator::ipc_channel::ipc::IpcReceiver as Receiver;
@@ -45,7 +45,10 @@ pub struct Coordinator {
     running: Arc<AtomicBool>,
     log: oplog::OpLog,
     clients: HashMap<String, (Sender<ProtocolMessage>, Receiver<ProtocolMessage>)>,
-    participants: HashMap<String, Sender<ProtocolMessage>>,
+    participants: HashMap<String, (Sender<ProtocolMessage>, Receiver<ProtocolMessage>)>,
+    committed_ops: u64,
+    aborted_ops: u64,
+    unknown_ops: u64,
 }
 
 ///
@@ -79,7 +82,9 @@ impl Coordinator {
             // TODO
             clients: HashMap::new(),
             participants: HashMap::new(),
-
+            committed_ops: 0,
+            aborted_ops: 0,
+            unknown_ops: 0,
         }
     }
 
@@ -90,11 +95,11 @@ impl Coordinator {
     /// HINT: Keep track of any channels involved!
     /// HINT: You may need to change the signature of this function
     ///
-    pub fn participant_join(&mut self, name: &String, tx: Sender<ProtocolMessage>) {
+    pub fn participant_join(&mut self, name: &String, tx: Sender<ProtocolMessage>, rx: Receiver<ProtocolMessage>) {
         assert!(self.state == CoordinatorState::Quiescent);
 
         // TODO
-        self.participants.insert(name.clone(), tx);
+        self.participants.insert(name.clone(), (tx, rx));
         info!("Participant {} joined successfully.", name);
     }
 
@@ -109,6 +114,7 @@ impl Coordinator {
         assert!(self.state == CoordinatorState::Quiescent);
 
         // TODO
+        // insert to the clients hashmap when joining to coordinator
         self.clients.insert(name.clone(), (tx, rx));
         info!("Client {} joined successfully.", name);
     }
@@ -120,11 +126,10 @@ impl Coordinator {
     ///
     pub fn report_status(&mut self) {
         // TODO: Collect actual stats
-        let successful_ops: u64 = 0;
-        let failed_ops: u64 = 0;
-        let unknown_ops: u64 = 0;
-
-        println!("coordinator     :\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}", successful_ops, failed_ops, unknown_ops);
+        println!(
+            "coordinator     :    C:{:6}    A:{:6}    U:{:6}",
+            self.committed_ops, self.aborted_ops, self.unknown_ops
+        );
     }
 
     ///
@@ -134,88 +139,142 @@ impl Coordinator {
     /// HINT: Wait for some kind of exit signal before returning from the protocol!
     ///
     pub fn protocol(&mut self) {
-
-        // TODO
         while self.running.load(Ordering::SeqCst) {
-            // Wait for a client request
-            if let Some((client_name, (tx, rx))) = self.clients.iter_mut().next() {
-                match rx.try_recv() {
-                    Ok(request) => {
-                        info!("Coordinator received request from client: {}", client_name);
-                        self.state = CoordinatorState::ReceivedRequest;
-                        // Proposal Phase
-                        for (participant_name, participant_tx) in &self.participants {
-                            let proposal = ProtocolMessage::generate(
-                                MessageType::CoordinatorPropose,
-                                request.txid.clone(),
-                                client_name.clone(),
-                                0,
-                            );
-                            if let Err(e) = participant_tx.send(proposal) {
-                                error!("Failed to send proposal to participant {}: {:?}", participant_name, e);
-                            }
-                        }
-                        self.state = CoordinatorState::ProposalSent;
+            let mut made_progress = false;
 
-                        let mut votes = Vec::new();
-                        for (participant_name, participant_tx) in &self.participants {
-                            match rx.try_recv() {
-                                Ok(vote) => {
-                                    if vote.mtype == MessageType::ParticipantVoteCommit
-                                        || vote.mtype == MessageType::ParticipantVoteAbort
-                                    {
-                                        info!("Received vote from participant {}: {:?}", participant_name, vote);
-                                        votes.push(vote);
+            // Iterate all clients once per tick
+            let client_keys: Vec<String> = self.clients.keys().cloned().collect();
+            for client_key in client_keys {
+                let handled = if let Some((to_client, from_client)) = self.clients.get_mut(&client_key) {
+                    match from_client.try_recv() {
+                        Ok(request) => {
+                            info!("Coordinator received request from client: {}", client_key);
+                            self.state = CoordinatorState::ReceivedRequest;
+
+                            // Send proposal to all participants
+                            for (participant_name, (p_tx, _p_rx)) in self.participants.iter() {
+                                let proposal = ProtocolMessage::generate(
+                                    MessageType::CoordinatorPropose,
+                                    request.txid.clone(),
+                                    client_key.clone(),
+                                    0,
+                                );
+                                if let Err(e) = p_tx.send(proposal) {
+                                    error!("Failed to send proposal to participant {}: {:?}", participant_name, e);
+                                }
+                            }
+                            self.state = CoordinatorState::ProposalSent;
+
+                            // collect votes with a deadline
+                            let mut votes = Vec::new();
+                            let mut pending: std::collections::HashSet<String> =
+                                self.participants.keys().cloned().collect();
+                            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1000);
+
+                            while !pending.is_empty() && std::time::Instant::now() < deadline {
+                                for (pname, (_p_tx, p_rx)) in self.participants.iter_mut() {
+                                    if !pending.contains(pname) {
+                                        continue;
+                                    }
+                                    match p_rx.try_recv() {
+                                        Ok(vote) => {
+                                            if vote.mtype == MessageType::ParticipantVoteCommit
+                                                || vote.mtype == MessageType::ParticipantVoteAbort
+                                            {
+                                                info!("Received vote from participant {}: {:?}", pname, vote.mtype);
+                                                votes.push((pname.clone(), vote));
+                                                pending.remove(pname);
+                                            }
+                                        }
+                                        Err(TryRecvError::Empty) => {}
+                                        Err(e) => {
+                                            error!("Error receiving vote from {}: {:?}", pname, e);
+                                            pending.remove(pname);
+                                        }
                                     }
                                 }
-                                Err(TryRecvError::Empty) => {
-                                    error!("Timeout waiting for vote from participant {}", participant_name);
-                                    self.state = CoordinatorState::ReceivedVotesAbort;
-                                    break;
-                                }
-                                Err(e) => {
-                                    error!("Error receiving vote: {:?}", e);
-                                    self.state = CoordinatorState::ReceivedVotesAbort;
-                                    break;
+                                if !pending.is_empty() {
+                                    std::thread::sleep(std::time::Duration::from_millis(10));
                                 }
                             }
-                        }
-                        // global decision made from votes
-                        let mut global_decision = MessageType::CoordinatorCommit;
-                        for vote in &votes {
-                            // If any vote is abort, global decision is abort
-                            if vote.mtype != MessageType::ParticipantVoteCommit {
-                                global_decision = MessageType::CoordinatorAbort;
-                                self.state = CoordinatorState::ReceivedVotesAbort;
-                                break;
-                            }
-                        }
-                        // Update state based on global decision -
-                        if global_decision == MessageType::CoordinatorCommit {
-                            self.state = CoordinatorState::ReceivedVotesCommit;
-                        }
 
-                        for (participant_name, participant_tx) in &self.participants {
-                            let decision = ProtocolMessage::generate(
+                            if !pending.is_empty() {
+                                error!("Timeout waiting for votes from participants: {:?}", pending);
+                                self.state = CoordinatorState::ReceivedVotesAbort;
+                            }
+
+                            // decision phase
+                            let mut global_decision = MessageType::CoordinatorCommit;
+                            for (_pname, vote) in &votes {
+                                if vote.mtype != MessageType::ParticipantVoteCommit {
+                                    global_decision = MessageType::CoordinatorAbort;
+                                    self.state = CoordinatorState::ReceivedVotesAbort;
+                                    break;
+                                }
+                            }
+                            if global_decision == MessageType::CoordinatorCommit && pending.is_empty() {
+                                self.state = CoordinatorState::ReceivedVotesCommit;
+                            } else {
+                                global_decision = MessageType::CoordinatorAbort;
+                            }
+
+                            match global_decision {
+                                MessageType::CoordinatorCommit => self.committed_ops += 1,
+                                MessageType::CoordinatorAbort => self.aborted_ops += 1,
+                                _ => self.unknown_ops += 1,
+                            }
+
+                            self.log.append(
                                 global_decision,
                                 request.txid.clone(),
-                                client_name.clone(),
+                                "coordinator".to_string(),
                                 0,
                             );
-                            if let Err(e) = participant_tx.send(decision) {
-                                error!("Failed to send decision to participant {}: {:?}", participant_name, e);
+
+                            // Notify participants
+                            for (participant_name, (p_tx, _p_rx)) in self.participants.iter() {
+                                let decision = ProtocolMessage::generate(
+                                    global_decision,
+                                    request.txid.clone(),
+                                    client_key.clone(),
+                                    0,
+                                );
+                                if let Err(e) = p_tx.send(decision) {
+                                    error!("Failed to send decision to participant {}: {:?}", participant_name, e);
+                                }
                             }
+                            self.state = CoordinatorState::SentGlobalDecision;
+
+                            // Notify client with result
+                            let client_result = match global_decision {
+                                MessageType::CoordinatorCommit => MessageType::ClientResultCommit,
+                                _ => MessageType::ClientResultAbort,
+                            };
+                            let result_msg = ProtocolMessage::generate(
+                                client_result,
+                                request.txid.clone(),
+                                "coordinator".to_string(),
+                                0,
+                            );
+                            if let Err(e) = to_client.send(result_msg) {
+                                error!("Failed to send result to client {}: {:?}", client_key, e);
+                            }
+                            true
                         }
-                        self.state = CoordinatorState::SentGlobalDecision;
+                        Err(TryRecvError::Empty) => false,
+                        Err(e) => {
+                            error!("Error receiving client request: {:?}", e);
+                            false
+                        }
                     }
-                    Err(TryRecvError::Empty) => {
-                        // No request received, continue
-                        thread::sleep(Duration::from_millis(100));
-                    }
-                    Err(e) => {
-                        error!("Error receiving client request: {:?}", e);
-                    }
-                }
+                } else {
+                    false
+                };
+                if handled { made_progress = true; }
+            }
+
+            if !made_progress {
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
         }
 

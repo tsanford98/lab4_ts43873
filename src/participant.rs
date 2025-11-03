@@ -50,6 +50,9 @@ pub struct Participant {
     operation_success_prob: f64,
     tx: Sender<ProtocolMessage>,
     rx: Receiver<ProtocolMessage>,
+    committed_ops: u64,
+    aborted_ops: u64,
+    unknown_ops: u64,
 }
 
 ///
@@ -94,6 +97,9 @@ impl Participant {
             // TODO
             tx,
             rx,
+            committed_ops: 0,
+            aborted_ops: 0,
+            unknown_ops: 0,
         }
     }
 
@@ -109,8 +115,12 @@ impl Participant {
         let x: f64 = random();
         if x <= self.send_success_prob {
             // TODO: Send success
+            if let Err(e) = self.tx.send(pm) {
+                error!("{}::Failed to send message: {:?}", self.id_str.clone(), e);
+            }
         } else {
             // TODO: Send fail
+            warn!("{}::Simulated send drop (p={})", self.id_str, self.send_success_prob);
         }
     }
 
@@ -126,17 +136,17 @@ impl Participant {
     ///       (it's ok to add parameters or return something other than
     ///       bool if it's more convenient for your design).
     ///
+    // Honor operation_success_prob and return the outcome.
     pub fn perform_operation(&mut self, request_option: &Option<ProtocolMessage>) -> bool {
-
-        trace!("{}::Performing operation", self.id_str.clone());
+        trace!("{}::Performing operation", self.id_str);
         let x: f64 = random();
-        if x <= self.operation_success_prob {
-            // TODO: Successful operation
+        let ok = x <= self.operation_success_prob;
+        if ok {
+            trace!("{}::Operation succeeded (p={})", self.id_str, self.operation_success_prob);
         } else {
-            // TODO: Failed operation
+            trace!("{}::Operation failed (p={})", self.id_str, self.operation_success_prob);
         }
-
-        true
+        ok
     }
 
     ///
@@ -146,11 +156,10 @@ impl Participant {
     ///
     pub fn report_status(&mut self) {
         // TODO: Collect actual stats
-        let successful_ops: u64 = 0;
-        let failed_ops: u64 = 0;
-        let unknown_ops: u64 = 0;
-
-        println!("{:16}:\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}", self.id_str.clone(), successful_ops, failed_ops, unknown_ops);
+        println!(
+            "{:16}:    C:{:6}    A:{:6}    U:{:6}",
+            self.id_str, self.committed_ops, self.aborted_ops, self.unknown_ops
+        );
     }
 
     ///
@@ -161,6 +170,9 @@ impl Participant {
         trace!("{}::Waiting for exit signal", self.id_str.clone());
 
         // TODO
+        while self.running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(500));
+        }
 
         trace!("{}::Exiting", self.id_str.clone());
     }
@@ -172,10 +184,71 @@ impl Participant {
     /// HINT: Wait for some kind of exit signal before returning from the protocol!
     ///
     pub fn protocol(&mut self) {
-        trace!("{}::Beginning protocol", self.id_str.clone());
+        trace!("{}::Beginning protocol", self.id_str);
 
-        // TODO
+        while self.running.load(Ordering::SeqCst) {
+            match self.rx.try_recv() {
+                Ok(msg) => {
+                    match msg.mtype {
+                        MessageType::CoordinatorPropose => {
+                            info!("{}::Received PROPOSE for txid={}", self.id_str, msg.txid);
+                            self.state = ParticipantState::ReceivedP1;
 
+                            let op_ok = self.perform_operation(&Some(msg.clone()));
+                            let vote_type = if op_ok {
+                                self.state = ParticipantState::VotedCommit;
+                                MessageType::ParticipantVoteCommit
+                            } else {
+                                self.state = ParticipantState::VotedAbort;
+                                MessageType::ParticipantVoteAbort
+                            };
+
+                            let vote = ProtocolMessage::generate(
+                                vote_type,
+                                msg.txid.clone(),
+                                self.id_str.clone(),
+                                0,
+                            );
+                            self.send(vote);
+                            self.state = ParticipantState::AwaitingGlobalDecision;
+                        }
+                        MessageType::CoordinatorCommit => {
+                            info!("{}::Received COMMIT for txid={}", self.id_str, msg.txid);
+                            self.state = ParticipantState::Quiescent;
+                            self.committed_ops += 1;
+                            self.log.append(
+                                MessageType::CoordinatorCommit,
+                                msg.txid.clone(),
+                                self.id_str.clone(),
+                                0,
+                            );
+                        }
+                        MessageType::CoordinatorAbort => {
+                            info!("{}::Received ABORT for txid={}", self.id_str, msg.txid);
+                            self.state = ParticipantState::Quiescent;
+                            self.aborted_ops += 1;
+                            self.log.append(
+                                MessageType::CoordinatorAbort,
+                                msg.txid.clone(),
+                                self.id_str.clone(),
+                                0,
+                            );
+                        }
+                        _ => {
+                            trace!("{}::Ignoring message {:?}", self.id_str, msg.mtype);
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(TryRecvError::IpcError(e)) => {
+                    // Coordinator side may still be starting up; avoid tight loop
+                    error!("{}::IPC receive error: {:?}", self.id_str, e);
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
         self.wait_for_exit_signal();
         self.report_status();
     }

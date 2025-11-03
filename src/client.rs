@@ -28,6 +28,9 @@ pub struct Client {
     pub num_requests: u32,
     pub tx: Sender<ProtocolMessage>,
     pub rx: Receiver<ProtocolMessage>,
+    successful_ops: u64,
+    failed_ops: u64,
+    unknown_ops: u64,
 }
 
 ///
@@ -64,6 +67,9 @@ impl Client {
             // TODO
             tx,
             rx,
+            successful_ops: 0,
+            failed_ops: 0,
+            unknown_ops: 0,
         }
     }
 
@@ -75,6 +81,9 @@ impl Client {
         trace!("{}::Waiting for exit signal", self.id_str.clone());
 
         // TODO
+        while self.running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(100));
+        }
 
         trace!("{}::Exiting", self.id_str.clone());
     }
@@ -87,14 +96,19 @@ impl Client {
 
         // Create a new request with a unique TXID.
         self.num_requests = self.num_requests + 1;
+        // construct unique transaction id
         let txid = format!("{}_op_{}", self.id_str.clone(), self.num_requests);
-        let pm = message::ProtocolMessage::generate(message::MessageType::ClientRequest,
+
+        let pm = ProtocolMessage::generate(MessageType::ClientRequest,
                                                     txid.clone(),
                                                     self.id_str.clone(),
                                                     self.num_requests);
         info!("{}::Sending operation #{}", self.id_str.clone(), self.num_requests);
+        // log the message being sent
+        info!("{}::Sending Protocol Message: {:?}", self.id_str.clone(), pm);
 
         // TODO
+        self.tx.send(pm).unwrap();
 
         trace!("{}::Sent operation #{}", self.id_str.clone(), self.num_requests);
     }
@@ -110,6 +124,19 @@ impl Client {
         info!("{}::Receiving Coordinator Result", self.id_str.clone());
 
         // TODO
+        match self.rx.recv() {
+            Ok(pm) => {
+                match pm.mtype {
+                    MessageType::ClientResultCommit => self.successful_ops += 1,
+                    MessageType::ClientResultAbort => self.failed_ops += 1,
+                    _ => self.unknown_ops += 1,
+                }
+            }
+            Err(e) => {
+                error!("{}::recv_result failed: {:?}", self.id_str, e);
+                self.unknown_ops += 1;
+            }
+        }
     }
 
     ///
@@ -119,11 +146,10 @@ impl Client {
     ///
     pub fn report_status(&mut self) {
         // TODO: Collect actual stats
-        let successful_ops: u64 = 0;
-        let failed_ops: u64 = 0;
-        let unknown_ops: u64 = 0;
-
-        println!("{:16}:\tCommitted: {:6}\tAborted: {:6}\tUnknown: {:6}", self.id_str.clone(), successful_ops, failed_ops, unknown_ops);
+        println!(
+            "{:16}:    C:{:6}    A:{:6}    U:{:6}",
+            self.id_str, self.successful_ops, self.failed_ops, self.unknown_ops
+        );
     }
 
     ///
@@ -136,6 +162,13 @@ impl Client {
     pub fn protocol(&mut self, n_requests: u32) {
 
         // TODO
+        for _ in 0..n_requests {
+            if !self.running.load(Ordering::SeqCst) {
+                break; // Exit early if the program is stopped
+            }
+            self.send_next_operation();
+            self.recv_result();
+        }
         self.wait_for_exit_signal();
         self.report_status();
     }

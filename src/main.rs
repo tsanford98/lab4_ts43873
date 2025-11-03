@@ -13,6 +13,7 @@ use ipc_channel::ipc::IpcSender as Sender;
 use ipc_channel::ipc::IpcReceiver as Receiver;
 use ipc_channel::ipc::IpcOneShotServer;
 use ipc_channel::ipc::channel;
+
 pub mod message;
 pub mod oplog;
 pub mod coordinator;
@@ -35,15 +36,28 @@ use message::ProtocolMessage;
 /// HINT: You can change the signature of the function if necessary
 ///
 fn spawn_child_and_connect(child_opts: &mut tpcoptions::TPCOptions) -> (Child, Sender<ProtocolMessage>, Receiver<ProtocolMessage>) {
+    let (server, server_name) = IpcOneShotServer::<(Sender<ProtocolMessage>, Sender<Sender<ProtocolMessage>>)>::new()
+        .expect("Failed to create server");
+
+    child_opts.ipc_path = server_name.clone();
+
     let child = Command::new(env::current_exe().unwrap())
         .args(child_opts.as_vec())
         .spawn()
         .expect("Failed to execute child process");
 
-    let (tx, rx) = channel().unwrap();
-    // TODO
+    let (_, (parent_to_child_tx, mailbox_to_child)) =
+        server.accept().expect("Failed to accept child bootstrap payload");
 
-    (child, tx, rx)
+    // let (tx, rx) = channel().unwrap();
+    // TODO
+    let (child_to_parent_tx, child_to_parent_rx) = channel::<ProtocolMessage>().unwrap();
+    mailbox_to_child
+        .send(child_to_parent_tx)
+        .expect("Failed to send child_to_parent_tx to child");
+
+
+    (child, parent_to_child_tx, child_to_parent_rx)
 }
 
 ///
@@ -58,11 +72,23 @@ fn spawn_child_and_connect(child_opts: &mut tpcoptions::TPCOptions) -> (Child, S
 /// HINT: You can change the signature of the function if necessasry
 ///
 fn connect_to_coordinator(opts: &tpcoptions::TPCOptions) -> (Sender<ProtocolMessage>, Receiver<ProtocolMessage>) {
-    let (tx, rx) = channel().unwrap();
+    // let (tx, rx) = channel().unwrap();
 
     // TODO
+    let bootstrap: Sender<(Sender<ProtocolMessage>, Sender<Sender<ProtocolMessage>>)> =
+        Sender::connect(opts.ipc_path.clone()).expect("Failed to connect to rendezvous");
+    let (parent_to_child_tx, parent_to_child_rx) = channel::<ProtocolMessage>().unwrap();
+    let (mailbox_tx, mailbox_rx) = channel::<Sender<ProtocolMessage>>().unwrap();
+    bootstrap
+        .send((parent_to_child_tx, mailbox_tx))
+        .expect("Failed to send bootstrap payload to parent");
+    let child_to_parent_tx = mailbox_rx
+        .recv()
+        .expect("Failed to receive child_to_parent_tx from parent");
 
-    (tx, rx)
+
+
+    (child_to_parent_tx, parent_to_child_rx)
 }
 
 ///
@@ -84,16 +110,19 @@ fn run(opts: & tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
 
     // TODO
     let mut coordinator = coordinator::Coordinator::new(coord_log_path, &running);
-    let (server, server_name) = IpcOneShotServer::<(Sender<ProtocolMessage>, Receiver<ProtocolMessage>)>::new().unwrap();
-    // set opts.ipc_path to server_name
+    // let (server, server_name) = IpcOneShotServer::<(Sender<ProtocolMessage>, Receiver<ProtocolMessage>)>::new().unwrap();
+    // set run_opts.ipc_path to server_name
     let mut run_opts = opts.clone();
-    run_opts.ipc_path = server_name;
+    // run_opts.ipc_path = server_name;
+    let num_requests_per_client = run_opts.num_requests;
     let mut children = Vec::new();
+    // num may need to be set to num request / num clients but im not sure at this moment
     for i in 0..opts.num_clients {
         let mut child_opts = tpcoptions::TPCOptions {
             mode: "client".to_string(),
             num: i,
             ipc_path: run_opts.ipc_path.clone(),
+            num_requests: num_requests_per_client,
             ..opts.clone()
         };
         let (child, tx, rx) = spawn_child_and_connect(&mut child_opts);
@@ -110,7 +139,7 @@ fn run(opts: & tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
         };
         let (child, tx, rx) = spawn_child_and_connect(&mut child_opts);
         let participant_id_str = format!("participant_{}", i);
-        coordinator.participant_join(&participant_id_str, tx);
+        coordinator.participant_join(&participant_id_str, tx, rx);
         children.push(child);
     }
     coordinator.protocol();
@@ -142,6 +171,7 @@ fn run_client(opts: & tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
         tx,
         rx,
     );
+    // info!("Client {} starting protocol with {} requests", opts.num, opts.num_requests);
     client.protocol(opts.num_requests);
 }
 
