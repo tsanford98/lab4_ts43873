@@ -140,18 +140,19 @@ impl Coordinator {
     ///
     pub fn protocol(&mut self) {
         while self.running.load(Ordering::SeqCst) {
-            let mut made_progress = false;
+            let mut progressed = false;
 
-            // Iterate all clients once per tick
+            // iterate all clients
             let client_keys: Vec<String> = self.clients.keys().cloned().collect();
             for client_key in client_keys {
+                // check if there is a request from this client
                 let handled = if let Some((to_client, from_client)) = self.clients.get_mut(&client_key) {
                     match from_client.try_recv() {
                         Ok(request) => {
                             info!("Coordinator received request from client: {}", client_key);
                             self.state = CoordinatorState::ReceivedRequest;
 
-                            // Send proposal to all participants
+                            // send proposal to all participants
                             for (participant_name, (p_tx, _p_rx)) in self.participants.iter() {
                                 let proposal = ProtocolMessage::generate(
                                     MessageType::CoordinatorPropose,
@@ -167,12 +168,14 @@ impl Coordinator {
 
                             // collect votes with a deadline
                             let mut votes = Vec::new();
-                            let mut pending: std::collections::HashSet<String> =
-                                self.participants.keys().cloned().collect();
-                            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1000);
+                            // set of participants we are still waiting for votes from
+                            let mut pending: HashSet<String> = self.participants.keys().cloned().collect();
 
-                            while !pending.is_empty() && std::time::Instant::now() < deadline {
+                            // wait for votes until all received
+                            while !pending.is_empty() {
+                                // print how many participants we are waiting for
                                 for (pname, (_p_tx, p_rx)) in self.participants.iter_mut() {
+                                    // skip if already received vote from this participant - probably not needed but keeps it safe
                                     if !pending.contains(pname) {
                                         continue;
                                     }
@@ -194,10 +197,11 @@ impl Coordinator {
                                     }
                                 }
                                 if !pending.is_empty() {
-                                    std::thread::sleep(std::time::Duration::from_millis(10));
+                                    thread::sleep(Duration::from_millis(10));
                                 }
                             }
 
+                            // log any participants that did not respond in time
                             if !pending.is_empty() {
                                 error!("Timeout waiting for votes from participants: {:?}", pending);
                                 self.state = CoordinatorState::ReceivedVotesAbort;
@@ -212,6 +216,7 @@ impl Coordinator {
                                     break;
                                 }
                             }
+                            // if there are still pending participants, abort
                             if global_decision == MessageType::CoordinatorCommit && pending.is_empty() {
                                 self.state = CoordinatorState::ReceivedVotesCommit;
                             } else {
@@ -224,6 +229,7 @@ impl Coordinator {
                                 _ => self.unknown_ops += 1,
                             }
 
+                            // log the global decision
                             self.log.append(
                                 global_decision,
                                 request.txid.clone(),
@@ -231,31 +237,36 @@ impl Coordinator {
                                 0,
                             );
 
-                            // Notify participants
+                            // iterate all participants to send global decision to them
                             for (participant_name, (p_tx, _p_rx)) in self.participants.iter() {
+                                // generate the decision message
                                 let decision = ProtocolMessage::generate(
                                     global_decision,
                                     request.txid.clone(),
                                     client_key.clone(),
                                     0,
                                 );
+                                // send decision to participant
                                 if let Err(e) = p_tx.send(decision) {
                                     error!("Failed to send decision to participant {}: {:?}", participant_name, e);
                                 }
                             }
+                            // change state to SentGlobalDecision
                             self.state = CoordinatorState::SentGlobalDecision;
 
-                            // Notify client with result
+                            // notify client with result
                             let client_result = match global_decision {
                                 MessageType::CoordinatorCommit => MessageType::ClientResultCommit,
                                 _ => MessageType::ClientResultAbort,
                             };
+                            // make result message
                             let result_msg = ProtocolMessage::generate(
                                 client_result,
                                 request.txid.clone(),
                                 "coordinator".to_string(),
                                 0,
                             );
+                            // send result to client
                             if let Err(e) = to_client.send(result_msg) {
                                 error!("Failed to send result to client {}: {:?}", client_key, e);
                             }
@@ -270,11 +281,11 @@ impl Coordinator {
                 } else {
                     false
                 };
-                if handled { made_progress = true; }
+                if handled { progressed = true; }
             }
 
-            if !made_progress {
-                std::thread::sleep(std::time::Duration::from_millis(20));
+            if !progressed {
+                thread::sleep(Duration::from_millis(20));
             }
         }
 

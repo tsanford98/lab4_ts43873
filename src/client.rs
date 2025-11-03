@@ -81,6 +81,7 @@ impl Client {
         trace!("{}::Waiting for exit signal", self.id_str.clone());
 
         // TODO
+        // wait until running is false
         while self.running.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(100));
         }
@@ -94,11 +95,12 @@ impl Client {
     ///
     pub fn send_next_operation(&mut self) {
 
-        // Create a new request with a unique TXID.
+        // create a new request with a unique TXID.
         self.num_requests = self.num_requests + 1;
         // construct unique transaction id
         let txid = format!("{}_op_{}", self.id_str.clone(), self.num_requests);
 
+        // create protocol message
         let pm = ProtocolMessage::generate(MessageType::ClientRequest,
                                                     txid.clone(),
                                                     self.id_str.clone(),
@@ -126,6 +128,8 @@ impl Client {
         // TODO
         match self.rx.recv() {
             Ok(pm) => {
+                // log the message being received
+                info!("{}::Client Received Message: {:?}", self.id_str, pm);
                 match pm.mtype {
                     MessageType::ClientResultCommit => self.successful_ops += 1,
                     MessageType::ClientResultAbort => self.failed_ops += 1,

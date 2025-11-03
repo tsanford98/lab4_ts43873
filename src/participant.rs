@@ -203,6 +203,13 @@ impl Participant {
                                 MessageType::ParticipantVoteAbort
                             };
 
+                            self.log.append(
+                                vote_type,
+                                msg.txid.clone(),
+                                self.id_str.clone(),
+                                0,
+                            );
+
                             let vote = ProtocolMessage::generate(
                                 vote_type,
                                 msg.txid.clone(),
