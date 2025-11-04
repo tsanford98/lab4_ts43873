@@ -88,12 +88,12 @@ impl Participant {
     ) -> Participant {
 
         Participant {
-            id_str: id_str,
+            id_str,
             state: ParticipantState::Quiescent,
             log: oplog::OpLog::new(log_path),
             running: r,
-            send_success_prob: send_success_prob,
-            operation_success_prob: operation_success_prob,
+            send_success_prob,
+            operation_success_prob,
             // TODO
             tx,
             rx,
@@ -175,6 +175,7 @@ impl Participant {
 
         // TODO
         while self.running.load(Ordering::SeqCst) {
+            // sleep to avoid tight loop
             thread::sleep(Duration::from_millis(500));
         }
 
@@ -194,11 +195,14 @@ impl Participant {
             match self.rx.try_recv() {
                 Ok(msg) => {
                     match msg.mtype {
+                        // coordinator has proposed a transaction
                         MessageType::CoordinatorPropose => {
                             info!("{}::Received PROPOSE for txid={}", self.id_str, msg.txid);
                             self.state = ParticipantState::ReceivedP1;
 
+                            // perform the operation
                             let op_ok = self.perform_operation(&Some(msg.clone()));
+                            // decide vote based on operation outcome
                             let vote_type = if op_ok {
                                 self.state = ParticipantState::VotedCommit;
                                 MessageType::ParticipantVoteCommit
@@ -207,6 +211,7 @@ impl Participant {
                                 MessageType::ParticipantVoteAbort
                             };
 
+                            // append to log
                             self.log.append(
                                 vote_type,
                                 msg.txid.clone(),
@@ -214,18 +219,22 @@ impl Participant {
                                 0,
                             );
 
+                            // make vote ProtocolMessage
                             let vote = ProtocolMessage::generate(
                                 vote_type,
                                 msg.txid.clone(),
                                 self.id_str.clone(),
                                 0,
                             );
+                            // send vote to coordinator
                             self.send(vote);
+                            // set state to awaiting global decision
                             self.state = ParticipantState::AwaitingGlobalDecision;
                         }
                         MessageType::CoordinatorCommit => {
                             info!("{}::Received COMMIT for txid={}", self.id_str, msg.txid);
                             self.state = ParticipantState::Quiescent;
+                            // log the commit and increment committed ops
                             self.committed_ops += 1;
                             self.log.append(
                                 MessageType::CoordinatorCommit,
@@ -237,6 +246,7 @@ impl Participant {
                         MessageType::CoordinatorAbort => {
                             info!("{}::Received ABORT for txid={}", self.id_str, msg.txid);
                             self.state = ParticipantState::Quiescent;
+                            // log the abort and increment aborted ops
                             self.aborted_ops += 1;
                             self.log.append(
                                 MessageType::CoordinatorAbort,
@@ -251,10 +261,11 @@ impl Participant {
                     }
                 }
                 Err(TryRecvError::Empty) => {
+                    // no message available so sleep to avoid tight loop
                     thread::sleep(Duration::from_millis(10));
                 }
                 Err(TryRecvError::IpcError(e)) => {
-                    // Coordinator side may still be starting up; avoid tight loop
+                    // coordinator side may still be starting up so sleep to avoid tight loop
                     error!("{}::IPC receive error: {:?}", self.id_str, e);
                     thread::sleep(Duration::from_millis(50));
                 }

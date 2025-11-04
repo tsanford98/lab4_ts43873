@@ -61,8 +61,8 @@ impl Client {
         rx: Receiver<ProtocolMessage>,
     ) -> Client {
         Client {
-            id_str: id_str,
-            running: running,
+            id_str,
+            running,
             num_requests: 0,
             // TODO
             tx,
@@ -131,8 +131,10 @@ impl Client {
                 // log the message being received
                 info!("{}::Client Received Message: {:?}", self.id_str, pm);
                 match pm.mtype {
+                    // update stats based on message type
                     MessageType::ClientResultCommit => self.successful_ops += 1,
                     MessageType::ClientResultAbort => self.failed_ops += 1,
+                    // shoudl not happen but keeping for completeness
                     _ => self.unknown_ops += 1,
                 }
             }
