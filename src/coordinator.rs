@@ -160,9 +160,7 @@ impl Coordinator {
                                     client_key.clone(),
                                     0,
                                 );
-                                if let Err(e) = p_tx.send(proposal) {
-                                    error!("Failed to send proposal to participant {}: {:?}", participant_name, e);
-                                }
+                                p_tx.send(proposal).expect("Failed to send proposal to participant");
                             }
                             self.state = CoordinatorState::ProposalSent;
 
@@ -181,10 +179,12 @@ impl Coordinator {
                                     }
                                     match p_rx.try_recv() {
                                         Ok(vote) => {
+                                            // only consider commit/abort votes or send failure messages
                                             if vote.mtype == MessageType::ParticipantVoteCommit
-                                                || vote.mtype == MessageType::ParticipantVoteAbort
+                                                || vote.mtype == MessageType::ParticipantVoteAbort || vote.mtype == MessageType::SendFailure
                                             {
                                                 info!("Received vote from participant {}: {:?}", pname, vote.mtype);
+                                                // store the vote
                                                 votes.push((pname.clone(), vote));
                                                 pending.remove(pname);
                                             }
@@ -210,15 +210,16 @@ impl Coordinator {
                             // decision phase
                             let mut global_decision = MessageType::CoordinatorCommit;
                             for (_pname, vote) in &votes {
-                                if vote.mtype != MessageType::ParticipantVoteCommit {
+                                // if any participant voted to abort, abort
+                                if vote.mtype == MessageType::ParticipantVoteAbort || vote.mtype == MessageType::SendFailure {
                                     global_decision = MessageType::CoordinatorAbort;
-                                    self.state = CoordinatorState::ReceivedVotesAbort;
                                     break;
                                 }
                             }
                             // if there are still pending participants, abort
                             if global_decision == MessageType::CoordinatorCommit && pending.is_empty() {
                                 self.state = CoordinatorState::ReceivedVotesCommit;
+                                // all participants voted to commit so commit
                             } else {
                                 global_decision = MessageType::CoordinatorAbort;
                             }
@@ -226,6 +227,7 @@ impl Coordinator {
                             match global_decision {
                                 MessageType::CoordinatorCommit => self.committed_ops += 1,
                                 MessageType::CoordinatorAbort => self.aborted_ops += 1,
+                                // doest seem to be a case where unknown_ops would increase - leaving this for completeness
                                 _ => self.unknown_ops += 1,
                             }
 
@@ -238,7 +240,7 @@ impl Coordinator {
                             );
 
                             // iterate all participants to send global decision to them
-                            for (participant_name, (p_tx, _p_rx)) in self.participants.iter() {
+                            for (_participant_name, (p_tx, _p_rx)) in self.participants.iter() {
                                 // generate the decision message
                                 let decision = ProtocolMessage::generate(
                                     global_decision,
@@ -247,9 +249,7 @@ impl Coordinator {
                                     0,
                                 );
                                 // send decision to participant
-                                if let Err(e) = p_tx.send(decision) {
-                                    error!("Failed to send decision to participant {}: {:?}", participant_name, e);
-                                }
+                                p_tx.send(decision).expect("Failed to send global decision to participant");
                             }
                             // change state to SentGlobalDecision
                             self.state = CoordinatorState::SentGlobalDecision;
@@ -257,7 +257,7 @@ impl Coordinator {
                             // notify client with result
                             let client_result = match global_decision {
                                 MessageType::CoordinatorCommit => MessageType::ClientResultCommit,
-                                _ => MessageType::ClientResultAbort,
+                               _ => MessageType::ClientResultAbort,
                             };
                             // make result message
                             let result_msg = ProtocolMessage::generate(
@@ -267,9 +267,7 @@ impl Coordinator {
                                 0,
                             );
                             // send result to client
-                            if let Err(e) = to_client.send(result_msg) {
-                                error!("Failed to send result to client {}: {:?}", client_key, e);
-                            }
+                            to_client.send(result_msg).expect("Failed to send global decision to participant");
                             true
                         }
                         Err(TryRecvError::Empty) => false,
@@ -281,14 +279,15 @@ impl Coordinator {
                 } else {
                     false
                 };
-                if handled { progressed = true; }
+                if handled {
+                    progressed = true;
+                }
             }
 
             if !progressed {
                 thread::sleep(Duration::from_millis(20));
             }
         }
-
         self.report_status();
     }
 }

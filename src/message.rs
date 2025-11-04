@@ -26,6 +26,7 @@ pub enum MessageType {
     ClientResultCommit,     // result (success/fail) communicated to client
     ClientResultAbort,      // result (success/fail) communicated to client
     CoordinatorExit,        // Coordinator telling client/participant about shut down
+    SendFailure,          // Simulated send failure
 }
 
 ///

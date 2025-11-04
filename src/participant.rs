@@ -115,12 +115,16 @@ impl Participant {
         let x: f64 = random();
         if x <= self.send_success_prob {
             // TODO: Send success
-            if let Err(e) = self.tx.send(pm) {
-                error!("{}::Failed to send message: {:?}", self.id_str.clone(), e);
-            }
+            self.tx.send(pm).unwrap();
         } else {
             // TODO: Send fail
-            warn!("{}::Simulated send drop (p={})", self.id_str, self.send_success_prob);
+            let fail_msg = ProtocolMessage::generate(
+                MessageType::SendFailure,
+                pm.txid,
+                self.id_str.clone(),
+                0,
+            );
+            self.tx.send(fail_msg).unwrap();
         }
     }
 

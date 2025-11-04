@@ -46,11 +46,14 @@ fn spawn_child_and_connect(child_opts: &mut tpcoptions::TPCOptions) -> (Child, S
         .spawn()
         .expect("Failed to execute child process");
 
-    let (_, (parent_to_child_tx, mailbox_to_child)) = server.accept().expect("Failed to accept child payload");
+    // accept connection from child
+    let (_, (parent_to_child_tx, connection_to_child)) = server.accept().expect("Failed to accept child payload");
 
     // TODO
+    // set up communication channels
     let (child_to_parent_tx, child_to_parent_rx) = channel::<ProtocolMessage>().unwrap();
-    mailbox_to_child.send(child_to_parent_tx).expect("Failed to send child_to_parent_tx to child");
+    // send the child the tx to send messages to the parent
+    connection_to_child.send(child_to_parent_tx).expect("Failed to send child_to_parent_tx to child");
 
     (child, parent_to_child_tx, child_to_parent_rx)
 }
@@ -69,10 +72,15 @@ fn spawn_child_and_connect(child_opts: &mut tpcoptions::TPCOptions) -> (Child, S
 fn connect_to_coordinator(opts: &tpcoptions::TPCOptions) -> (Sender<ProtocolMessage>, Receiver<ProtocolMessage>) {
 
     // TODO
+    // connect to the parent via IPC
     let connection: Sender<(Sender<ProtocolMessage>, Sender<Sender<ProtocolMessage>>)> = Sender::connect(opts.ipc_path.clone()).expect("Failed to connect to rendezvous");
+    // set up communication channels
     let (parent_to_child_tx, parent_to_child_rx) = channel::<ProtocolMessage>().unwrap();
+    // send the parent the tx to send messages to the child, and a connection to receive the child's tx
     let (connection_tx, connection_rx) = channel::<Sender<ProtocolMessage>>().unwrap();
+    // send the parent the tx to send messages to the child, and a connection to receive the child's tx
     connection.send((parent_to_child_tx, connection_tx)).expect("Failed to send connection payload to parent");
+    // receive the child's tx from the parent
     let child_to_parent_tx = connection_rx.recv().expect("Failed to receive child_to_parent_tx from parent");
 
     (child_to_parent_tx, parent_to_child_rx)
@@ -97,7 +105,7 @@ fn run(opts: & tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
 
     // TODO
     let mut coordinator = coordinator::Coordinator::new(coord_log_path, &running);
-    // this was the wrong way of thinking about ipc
+    // my initial way of doing this was the wrong way of thinking about the IPC server
     // let (server, server_name) = IpcOneShotServer::<(Sender<ProtocolMessage>, Receiver<ProtocolMessage>)>::new().unwrap();
     // set run_opts.ipc_path to server_name
     let mut run_opts = opts.clone();
@@ -131,7 +139,7 @@ fn run(opts: & tpcoptions::TPCOptions, running: Arc<AtomicBool>) {
     }
     coordinator.protocol();
 
-    // Wait for all child processes to finish - this helps with proper logging and cleanup upon Ctrl+C
+    // wait for all child processes to finish - this helps with proper logging and cleanup upon Ctrl+C
     for mut child in children {
         if let Err(e) = child.wait() {
             error!("Failed to wait for child process: {:?}", e);
