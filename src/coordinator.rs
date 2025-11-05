@@ -164,7 +164,7 @@ impl Coordinator {
                             }
                             self.state = CoordinatorState::ProposalSent;
 
-                            // collect votes with a deadline
+                            // collect votes from all participants
                             let mut votes = Vec::new();
                             // set of participants we are still waiting for votes from
                             let mut pending: HashSet<String> = self.participants.keys().cloned().collect();

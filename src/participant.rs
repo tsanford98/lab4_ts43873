@@ -176,7 +176,7 @@ impl Participant {
         // TODO
         while self.running.load(Ordering::SeqCst) {
             // sleep to avoid tight loop
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_millis(100));
         }
 
         trace!("{}::Exiting", self.id_str.clone());
