@@ -8,6 +8,7 @@ extern crate rand;
 extern crate ipc_channel;
 
 use std::collections::{HashMap, HashSet};
+use std::future::pending;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -139,12 +140,16 @@ impl Coordinator {
     /// HINT: Wait for some kind of exit signal before returning from the protocol!
     ///
     pub fn protocol(&mut self) {
-        while self.running.load(Ordering::SeqCst) {
+        loop {
+            if !self.running.load(Ordering::SeqCst) {
+                break;
+            }
             let mut progressed = false;
 
             // iterate all clients
             let client_keys: Vec<String> = self.clients.keys().cloned().collect();
             for client_key in client_keys {
+                if !self.running.load(Ordering::SeqCst) { break; }
                 // check if there is a request from this client
                 let handled = if let Some((to_client, from_client)) = self.clients.get_mut(&client_key) {
                     match from_client.try_recv() {
@@ -160,7 +165,11 @@ impl Coordinator {
                                     client_key.clone(),
                                     0,
                                 );
-                                p_tx.send(proposal).expect("Failed to send proposal to participant");
+                                if let Err(e) = p_tx.send(proposal) {
+                                    error!("Failed to send proposal to participant {}: {:?}", participant_name, e);
+                                } else {
+                                    info!("Sent proposal to participant {}", participant_name);
+                                }
                             }
                             self.state = CoordinatorState::ProposalSent;
 
@@ -171,7 +180,9 @@ impl Coordinator {
 
                             // wait for votes until all received
                             while !pending.is_empty() {
+                                if !self.running.load(Ordering::SeqCst) { break; }
                                 // print how many participants we are waiting for
+                                let mut to_remove = Vec::new();
                                 for (pname, (_p_tx, p_rx)) in self.participants.iter_mut() {
                                     // skip if already received vote from this participant - probably not needed but keeps it safe
                                     if !pending.contains(pname) {
@@ -193,8 +204,12 @@ impl Coordinator {
                                         Err(e) => {
                                             error!("Error receiving vote from {}: {:?}", pname, e);
                                             pending.remove(pname);
+                                            to_remove.push(pname.clone());
                                         }
                                     }
+                                }
+                                for pname in to_remove {
+                                    self.participants.remove(&pname);
                                 }
                                 if !pending.is_empty() {
                                     thread::sleep(Duration::from_millis(10));
@@ -203,7 +218,7 @@ impl Coordinator {
 
                             // log any participants that did not respond in time
                             if !pending.is_empty() {
-                                error!("Timeout waiting for votes from participants: {:?}", pending);
+                                debug!("Timeout waiting for votes from participants: {:?}", pending);
                                 self.state = CoordinatorState::ReceivedVotesAbort;
                             }
 
@@ -249,7 +264,13 @@ impl Coordinator {
                                     0,
                                 );
                                 // send decision to participant
-                                p_tx.send(decision).expect("Failed to send global decision to participant");
+                                if let Err(e) = p_tx.send(decision) {
+                                    if self.running.load(Ordering::SeqCst) {
+                                        debug!("Failed to send global decision to participant: {:?}", e);
+                                    } else {
+                                        info!("Skipping send of global decision to participant due to shutdown.");
+                                    }
+                                }
                             }
                             // change state to SentGlobalDecision
                             self.state = CoordinatorState::SentGlobalDecision;
@@ -257,7 +278,7 @@ impl Coordinator {
                             // notify client with result
                             let client_result = match global_decision {
                                 MessageType::CoordinatorCommit => MessageType::ClientResultCommit,
-                               _ => MessageType::ClientResultAbort,
+                                _ => MessageType::ClientResultAbort,
                             };
                             // make result message
                             let result_msg = ProtocolMessage::generate(
@@ -267,7 +288,13 @@ impl Coordinator {
                                 0,
                             );
                             // send result to client
-                            to_client.send(result_msg).expect("Failed to send global decision to participant");
+                            if let Err(e) = to_client.send(result_msg) {
+                                if self.running.load(Ordering::SeqCst) {
+                                    debug!("Failed to send result to client: {:?}", e);
+                                } else {
+                                    info!("Skipping send of result to client due to shutdown.");
+                                }
+                            }
                             true
                         }
                         Err(TryRecvError::Empty) => false,
@@ -286,6 +313,37 @@ impl Coordinator {
 
             if !progressed {
                 thread::sleep(Duration::from_millis(20));
+            }
+        }
+        // loop through participants and clients to send exit messages to any that have not been dropped yet
+        for (_participant_name, (p_tx, _p_rx)) in self.participants.iter() {
+            let exit_msg = ProtocolMessage::generate(
+                MessageType::CoordinatorExit,
+                "".to_string(),
+                "coordinator".to_string(),
+                0,
+            );
+            if let Err(e) = p_tx.send(exit_msg) {
+                if self.running.load(Ordering::SeqCst) {
+                    info!("Failed to send exit message to participant: {:?}", e);
+                } else {
+                    info!("Skipping send of exit message to participant due to shutdown.");
+                }
+            }
+        }
+        for (_client_name, (c_tx, _c_rx)) in self.clients.iter() {
+            let exit_msg = ProtocolMessage::generate(
+                MessageType::CoordinatorExit,
+                "".to_string(),
+                "coordinator".to_string(),
+                0,
+            );
+            if let Err(e) = c_tx.send(exit_msg) {
+                if self.running.load(Ordering::SeqCst) {
+                    info!("Failed to send exit message to client: {:?}", e);
+                } else {
+                    info!("Skipping send of exit message to client due to shutdown.");
+                }
             }
         }
         self.report_status();

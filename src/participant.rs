@@ -115,6 +115,7 @@ impl Participant {
         let x: f64 = random();
         if x <= self.send_success_prob {
             // TODO: Send success
+            // check if running before sending - if not running, do not send
             self.tx.send(pm).unwrap();
         } else {
             // TODO: Send fail
@@ -176,7 +177,7 @@ impl Participant {
         // TODO
         while self.running.load(Ordering::SeqCst) {
             // sleep to avoid tight loop
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(10));
         }
 
         trace!("{}::Exiting", self.id_str.clone());
@@ -191,7 +192,7 @@ impl Participant {
     pub fn protocol(&mut self) {
         trace!("{}::Beginning protocol", self.id_str);
 
-        while self.running.load(Ordering::SeqCst) {
+        loop {
             match self.rx.try_recv() {
                 Ok(msg) => {
                     match msg.mtype {
@@ -226,11 +227,12 @@ impl Participant {
                                 self.id_str.clone(),
                                 0,
                             );
-                            // send vote to coordinator
+
                             self.send(vote);
                             // set state to awaiting global decision
                             self.state = ParticipantState::AwaitingGlobalDecision;
                         }
+                        // coordinator has sent global commit
                         MessageType::CoordinatorCommit => {
                             info!("{}::Received COMMIT for txid={}", self.id_str, msg.txid);
                             self.state = ParticipantState::Quiescent;
@@ -243,6 +245,7 @@ impl Participant {
                                 0,
                             );
                         }
+                        // coordinator has sent global abort
                         MessageType::CoordinatorAbort => {
                             info!("{}::Received ABORT for txid={}", self.id_str, msg.txid);
                             self.state = ParticipantState::Quiescent;
@@ -255,19 +258,25 @@ impl Participant {
                                 0,
                             );
                         }
+                        // coordinator is shutting down
+                        MessageType::CoordinatorExit => {
+                            info!("{}::Received EXIT signal from Coordinator", self.id_str);
+                            self.running.store(false, Ordering::SeqCst);
+                            break;
+                        }
                         _ => {
-                            trace!("{}::Ignoring message {:?}", self.id_str, msg.mtype);
+                            println!("{}::Ignoring message {:?}", self.id_str, msg.mtype);
                         }
                     }
                 }
                 Err(TryRecvError::Empty) => {
                     // no message available so sleep to avoid tight loop
-                    thread::sleep(Duration::from_millis(10));
+                    thread::sleep(Duration::from_millis(5));
                 }
                 Err(TryRecvError::IpcError(e)) => {
                     // coordinator side may still be starting up so sleep to avoid tight loop
                     error!("{}::IPC receive error: {:?}", self.id_str, e);
-                    thread::sleep(Duration::from_millis(50));
+                    thread::sleep(Duration::from_millis(10));
                 }
             }
         }

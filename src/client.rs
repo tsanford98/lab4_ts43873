@@ -82,8 +82,11 @@ impl Client {
 
         // TODO
         // wait until running is false
-        while self.running.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_millis(100));
+        loop {
+            if !self.running.load(Ordering::SeqCst) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
         }
 
         trace!("{}::Exiting", self.id_str.clone());
@@ -112,6 +115,7 @@ impl Client {
         // TODO
         self.tx.send(pm).unwrap();
 
+
         trace!("{}::Sent operation #{}", self.id_str.clone(), self.num_requests);
     }
 
@@ -134,11 +138,18 @@ impl Client {
                     // update stats based on message type
                     MessageType::ClientResultCommit => self.successful_ops += 1,
                     MessageType::ClientResultAbort => self.failed_ops += 1,
-                    // shoudl not happen but keeping for completeness
-                    _ => self.unknown_ops += 1,
+                    MessageType::CoordinatorExit => {
+                        // Exit signal from coordinator
+                        self.running.store(false, Ordering::SeqCst);
+                    },
+                    // should not happen but keeping for completeness - might need to fix
+                    _ => {
+                        error!("{}::recv_result received unexpected message type: {:?}", self.id_str, pm.mtype);
+                    },
                 }
             }
             Err(e) => {
+                // don't know if this is correct to put here or not? very unlikely to happen
                 error!("{}::recv_result failed: {:?}", self.id_str, e);
                 self.unknown_ops += 1;
             }
