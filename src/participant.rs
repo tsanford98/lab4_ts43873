@@ -190,7 +190,7 @@ impl Participant {
     /// HINT: Wait for some kind of exit signal before returning from the protocol!
     ///
     pub fn protocol(&mut self) {
-        trace!("{}::Beginning protocol", self.id_str);
+        info!("{}::Beginning protocol", self.id_str);
 
         loop {
             match self.rx.try_recv() {
@@ -234,7 +234,7 @@ impl Participant {
                         }
                         // coordinator has sent global commit
                         MessageType::CoordinatorCommit => {
-                            info!("{}::Received COMMIT for txid={}", self.id_str, msg.txid);
+                            info!("{}::Received Coordinator COMMIT for txid={}", self.id_str, msg.txid);
                             self.state = ParticipantState::Quiescent;
                             // log the commit and increment committed ops
                             self.committed_ops += 1;
@@ -247,7 +247,7 @@ impl Participant {
                         }
                         // coordinator has sent global abort
                         MessageType::CoordinatorAbort => {
-                            info!("{}::Received ABORT for txid={}", self.id_str, msg.txid);
+                            info!("{}::Received Coordinator ABORT for txid={}", self.id_str, msg.txid);
                             self.state = ParticipantState::Quiescent;
                             // log the abort and increment aborted ops
                             self.aborted_ops += 1;
