@@ -86,7 +86,7 @@ impl Client {
             if !self.running.load(Ordering::SeqCst) {
                 break;
             }
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(1));
         }
 
         info!("{}::Exiting", self.id_str.clone());

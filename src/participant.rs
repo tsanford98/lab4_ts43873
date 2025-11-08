@@ -176,7 +176,7 @@ impl Participant {
         // TODO
         while self.running.load(Ordering::SeqCst) {
             // sleep to avoid tight loop
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(1));
         }
 
         info!("{}::Exiting", self.id_str.clone());
@@ -192,7 +192,7 @@ impl Participant {
         info!("{}::Beginning protocol", self.id_str);
 
         loop {
-            match self.rx.recv() {
+            match self.rx.try_recv() {
                 Ok(msg) => {
                     match msg.mtype {
                         // coordinator has proposed a transaction
@@ -268,15 +268,15 @@ impl Participant {
                         }
                     }
                 }
-                // Err(TryRecvError::Empty) => {
-                //     // no message available so sleep to avoid tight loop
-                //     thread::sleep(Duration::from_millis(1));
-                // }
-                // Err(TryRecvError::IpcError(e)) => {
-                //     // coordinator side may still be starting up so sleep to avoid tight loop
-                //     error!("{}::IPC receive error: {:?}", self.id_str, e);
-                //     thread::sleep(Duration::from_millis(1));
-                // }
+                Err(TryRecvError::Empty) => {
+                    // no message available so sleep to avoid tight loop
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(TryRecvError::IpcError(e)) => {
+                    // coordinator side may still be starting up so sleep to avoid tight loop
+                    error!("{}::IPC receive error: {:?}", self.id_str, e);
+                    thread::sleep(Duration::from_millis(1));
+                }
                 _ => {}
             }
         }

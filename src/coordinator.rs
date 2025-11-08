@@ -152,7 +152,7 @@ impl Coordinator {
                 if !self.running.load(Ordering::SeqCst) { break; }
                 // check if there is a request from this client
                 let handled = if let Some((to_client, from_client)) = self.clients.get_mut(&client_key) {
-                    match from_client.recv() {
+                    match from_client.try_recv() {
                         Ok(request) => {
                             info!("Coordinator received request from client: {}", client_key);
                             self.state = CoordinatorState::ReceivedRequest;
@@ -162,7 +162,7 @@ impl Coordinator {
                                 let proposal = ProtocolMessage::generate(
                                     MessageType::CoordinatorPropose,
                                     request.txid.clone(),
-                                    client_key.clone(),
+                                    "coordinator".to_string(),
                                     0,
                                 );
                                 if let Err(e) = p_tx.send(proposal) {
@@ -212,7 +212,7 @@ impl Coordinator {
                                     self.participants.remove(&pname);
                                 }
                                 if !pending.is_empty() {
-                                    thread::sleep(Duration::from_millis(10));
+                                    thread::sleep(Duration::from_millis(1));
                                 }
                             }
 
@@ -263,7 +263,7 @@ impl Coordinator {
                                 let decision = ProtocolMessage::generate(
                                     global_decision,
                                     request.txid.clone(),
-                                    client_key.clone(),
+                                    "coordinator".to_string(),
                                     0,
                                 );
                                 // send decision to participant
@@ -300,7 +300,7 @@ impl Coordinator {
                             }
                             true
                         }
-                        // Err(TryRecvError::Empty) => false,
+                        Err(TryRecvError::Empty) => false,
                         Err(e) => {
                             error!("Error receiving client request: {:?}", e);
                             false
@@ -315,7 +315,7 @@ impl Coordinator {
             }
 
             if !progressed {
-                thread::sleep(Duration::from_millis(20));
+                thread::sleep(Duration::from_millis(1));
             }
         }
         // loop through participants and clients to send exit messages to any that have not been dropped yet
