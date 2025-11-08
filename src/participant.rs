@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::thread;
-
+use ipc_channel::ipc::IpcError;
 use participant::rand::prelude::*;
 use participant::ipc_channel::ipc::IpcReceiver as Receiver;
 use participant::ipc_channel::ipc::TryRecvError;
@@ -147,14 +147,9 @@ impl Participant {
     ///
     // Honor operation_success_prob and return the outcome.
     pub fn perform_operation(&mut self, request_option: &Option<ProtocolMessage>) -> bool {
-        trace!("{}::Performing operation", self.id_str);
+        info!("{}::Performing operation", self.id_str);
         let x: f64 = random();
         let ok = x <= self.operation_success_prob;
-        if ok {
-            trace!("{}::Operation succeeded (p={})", self.id_str, self.operation_success_prob);
-        } else {
-            trace!("{}::Operation failed (p={})", self.id_str, self.operation_success_prob);
-        }
         ok
     }
 
@@ -176,7 +171,7 @@ impl Participant {
     /// Wait until the running flag is set by the CTRL-C handler
     ///
     pub fn wait_for_exit_signal(&mut self) {
-        trace!("{}::Waiting for exit signal", self.id_str.clone());
+        info!("{}::Waiting for exit signal", self.id_str.clone());
 
         // TODO
         while self.running.load(Ordering::SeqCst) {
@@ -184,7 +179,7 @@ impl Participant {
             thread::sleep(Duration::from_millis(10));
         }
 
-        trace!("{}::Exiting", self.id_str.clone());
+        info!("{}::Exiting", self.id_str.clone());
     }
 
     ///
@@ -197,7 +192,7 @@ impl Participant {
         info!("{}::Beginning protocol", self.id_str);
 
         loop {
-            match self.rx.try_recv() {
+            match self.rx.recv() {
                 Ok(msg) => {
                     match msg.mtype {
                         // coordinator has proposed a transaction
@@ -273,15 +268,16 @@ impl Participant {
                         }
                     }
                 }
-                Err(TryRecvError::Empty) => {
-                    // no message available so sleep to avoid tight loop
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Err(TryRecvError::IpcError(e)) => {
-                    // coordinator side may still be starting up so sleep to avoid tight loop
-                    error!("{}::IPC receive error: {:?}", self.id_str, e);
-                    thread::sleep(Duration::from_millis(10));
-                }
+                // Err(TryRecvError::Empty) => {
+                //     // no message available so sleep to avoid tight loop
+                //     thread::sleep(Duration::from_millis(1));
+                // }
+                // Err(TryRecvError::IpcError(e)) => {
+                //     // coordinator side may still be starting up so sleep to avoid tight loop
+                //     error!("{}::IPC receive error: {:?}", self.id_str, e);
+                //     thread::sleep(Duration::from_millis(1));
+                // }
+                _ => {}
             }
         }
         self.wait_for_exit_signal();

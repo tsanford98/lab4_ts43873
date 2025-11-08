@@ -78,7 +78,7 @@ impl Client {
     /// Wait until the running flag is set by the CTRL-C handler
     ///
     pub fn wait_for_exit_signal(&mut self) {
-        trace!("{}::Waiting for exit signal", self.id_str.clone());
+        info!("{}::Waiting for exit signal", self.id_str.clone());
 
         // TODO
         // wait until running is false
@@ -89,7 +89,7 @@ impl Client {
             thread::sleep(Duration::from_millis(10));
         }
 
-        trace!("{}::Exiting", self.id_str.clone());
+        info!("{}::Exiting", self.id_str.clone());
     }
 
     ///
@@ -116,7 +116,7 @@ impl Client {
         self.tx.send(pm).unwrap();
 
 
-        trace!("{}::Sent operation #{}", self.id_str.clone(), self.num_requests);
+        info!("{}::Sent operation #{}", self.id_str.clone(), self.num_requests);
     }
 
     ///
