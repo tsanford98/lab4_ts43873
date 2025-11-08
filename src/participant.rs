@@ -125,6 +125,10 @@ impl Participant {
                 self.id_str.clone(),
                 0,
             );
+            // I would think we would increment unknown_ops here, but the assignment is unclear, leaving it out for now
+            // incrementing here also would not be in line with how we increment committed/aborted ops upon receiving global decision
+            // so not sure where to go from there
+            // self.unknown_ops += 1;
             self.tx.send(fail_msg).unwrap();
         }
     }

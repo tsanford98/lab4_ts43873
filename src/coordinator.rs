@@ -226,7 +226,10 @@ impl Coordinator {
                             let mut global_decision = MessageType::CoordinatorCommit;
                             for (_pname, vote) in &votes {
                                 // if any participant voted to abort, abort
-                                if vote.mtype == MessageType::ParticipantVoteAbort || vote.mtype == MessageType::SendFailure {
+                                if vote.mtype == MessageType::ParticipantVoteAbort {
+                                    global_decision = MessageType::CoordinatorAbort;
+                                    break;
+                                } else if vote.mtype == MessageType::SendFailure {
                                     global_decision = MessageType::CoordinatorAbort;
                                     break;
                                 }
@@ -242,8 +245,8 @@ impl Coordinator {
                             match global_decision {
                                 MessageType::CoordinatorCommit => self.committed_ops += 1,
                                 MessageType::CoordinatorAbort => self.aborted_ops += 1,
-                                // doest seem to be a case where unknown_ops would increase - leaving this for completeness
-                                _ => self.unknown_ops += 1,
+                                // do nothing for unknown
+                                _ => {}
                             }
 
                             // log the global decision
