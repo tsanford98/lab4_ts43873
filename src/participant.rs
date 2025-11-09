@@ -147,7 +147,11 @@ impl Participant {
     ///
     // Honor operation_success_prob and return the outcome.
     pub fn perform_operation(&mut self, request_option: &Option<ProtocolMessage>) -> bool {
-        info!("{}::Performing operation", self.id_str);
+        let tx_id = match request_option {
+            Some(req) => req.txid.clone(),
+            None => "unknown_tx".to_string(),
+        };
+        info!("{}::Performing operation for tx_id {}", self.id_str, tx_id);
         let x: f64 = random();
         let ok = x <= self.operation_success_prob;
         ok
@@ -197,7 +201,7 @@ impl Participant {
                     match msg.mtype {
                         // coordinator has proposed a transaction
                         MessageType::CoordinatorPropose => {
-                            info!("{}::Received PROPOSE for txid={}", self.id_str, msg.txid);
+                            info!("{}::Received Coordinator PROPOSE for txid={}", self.id_str, msg.txid);
                             self.state = ParticipantState::ReceivedP1;
 
                             // perform the operation
@@ -277,7 +281,6 @@ impl Participant {
                     error!("{}::IPC receive error: {:?}", self.id_str, e);
                     thread::sleep(Duration::from_millis(1));
                 }
-                _ => {}
             }
         }
         self.wait_for_exit_signal();
