@@ -152,7 +152,7 @@ impl Coordinator {
                 if !self.running.load(Ordering::SeqCst) { break; }
                 // check if there is a request from this client
                 let handled = if let Some((to_client, from_client)) = self.clients.get_mut(&client_key) {
-                    match from_client.try_recv() {
+                    match from_client.recv() {
                         Ok(request) => {
                             info!("Coordinator received request from client: {}", client_key);
                             self.state = CoordinatorState::ReceivedRequest;
@@ -300,7 +300,6 @@ impl Coordinator {
                             }
                             true
                         }
-                        Err(TryRecvError::Empty) => false,
                         Err(e) => {
                             error!("Error receiving client request: {:?}", e);
                             false

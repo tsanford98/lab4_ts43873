@@ -196,7 +196,7 @@ impl Participant {
         info!("{}::Beginning protocol", self.id_str);
 
         loop {
-            match self.rx.try_recv() {
+            match self.rx.recv() {
                 Ok(msg) => {
                     match msg.mtype {
                         // coordinator has proposed a transaction
@@ -271,15 +271,11 @@ impl Participant {
                             println!("{}::Ignoring message {:?}", self.id_str, msg.mtype);
                         }
                     }
-                }
-                Err(TryRecvError::Empty) => {
-                    // no message available so sleep to avoid tight loop
-                    thread::sleep(Duration::from_millis(1));
-                }
-                Err(TryRecvError::IpcError(e)) => {
-                    // coordinator side may still be starting up so sleep to avoid tight loop
-                    error!("{}::IPC receive error: {:?}", self.id_str, e);
-                    thread::sleep(Duration::from_millis(1));
+                },
+                Err(_) => {
+                    // error receiving message
+                    error!("{}::Error receiving message from Coordinator", self.id_str);
+                    break;
                 }
             }
         }
