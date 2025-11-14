@@ -301,7 +301,15 @@ impl Coordinator {
                             true
                         }
                         Err(e) => {
-                            error!("Error receiving client request: {:?}", e);
+                            match e {
+                                ipc_channel::ipc::IpcError::Disconnected => {
+                                    info!("All client requests processed, channel disconnected.");
+                                    break;
+                                }
+                                _ => {
+                                    error!("Error receiving client request: {:?}", e);
+                                }
+                            }
                             false
                         }
                     }
